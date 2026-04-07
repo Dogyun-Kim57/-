@@ -1,5 +1,6 @@
-Table: users
-Columns:
+## Table: users
+### Columns:
+```
 id bigint AI PK 
 username varchar(50) 
 email varchar(100) 
@@ -9,9 +10,12 @@ role enum('user','admin')
 created_at datetime 
 updated_at datetime 
 deleted_at datetime
+```
+---
 
-Table: role_requests
-Columns:
+## Table: role_requests
+### Columns:
+```
 id bigint AI PK 
 user_id bigint 
 request_reason text 
@@ -19,9 +23,12 @@ status enum('대기','승인','거절')
 reviewed_by bigint 
 reviewed_at datetime 
 created_at datetime
+```
+---
 
-Table: reports
-Columns:
+## Table: reports
+### Columns:
+```
 id bigint AI PK 
 user_id bigint 
 title varchar(200) 
@@ -35,9 +42,12 @@ status enum('접수','확인중','처리완료','오탐')
 created_at datetime 
 updated_at datetime 
 deleted_at datetime
+```
+---
 
-Table: report_status_logs
-Columns:
+### Table: report_status_logs
+## Columns:
+```
 id bigint AI PK 
 report_id bigint 
 old_status enum('접수','확인중','처리완료','오탐') 
@@ -45,9 +55,12 @@ new_status enum('접수','확인중','처리완료','오탐')
 changed_by bigint 
 memo varchar(255) 
 created_at datetime
+```
+---
 
-Table: report_files
-Columns:
+## Table: report_files
+### Columns:
+```
 id bigint AI PK 
 report_id bigint 
 original_name varchar(255) 
@@ -59,9 +72,12 @@ is_active tinyint(1)
 uploaded_at datetime 
 updated_at datetime 
 deleted_at datetime
+```
+---
 
-Table: detections
-Columns:
+## Table: detections
+### Columns:
+```
 id bigint AI PK 
 report_id bigint 
 file_id bigint 
@@ -77,9 +93,12 @@ frame_no int
 time_sec decimal(10,2) 
 frame_width int 
 frame_height int
+```
+---
 
-Table: board_posts
-Columns:
+## Table: board_posts
+### Columns:
+```
 id bigint AI PK 
 user_id bigint 
 title varchar(200) 
@@ -90,9 +109,12 @@ is_hidden tinyint(1)
 created_at datetime 
 updated_at datetime 
 deleted_at datetime
+```
+---
 
-Table: board_files
-Columns:
+## Table: board_files
+### Columns:
+```
 id bigint AI PK 
 post_id bigint 
 original_name varchar(255) 
@@ -104,9 +126,12 @@ is_active tinyint(1)
 created_at datetime 
 updated_at datetime 
 deleted_at datetime
+```
+---
 
-Table: board_comments
-Columns:
+## Table: board_comments
+### Columns:
+```
 id bigint AI PK 
 post_id bigint 
 user_id bigint 
@@ -117,9 +142,12 @@ is_hidden tinyint(1)
 created_at datetime 
 updated_at datetime 
 deleted_at datetime
+```
+---
 
-Table: alerts
-Columns:
+## Table: alerts
+### Columns:
+```
 id bigint AI PK 
 report_id bigint 
 detection_id bigint 
@@ -128,13 +156,19 @@ message varchar(255)
 is_read tinyint(1) 
 created_at datetime 
 read_at datetime
+```
+---
 
-Table: alembic_version
-Columns:
+## Table: alembic_version
+### Columns:
+```
 version_num varchar(32) PK
+```
+---
 
-Table: ai_compare_runs
-Columns:
+## Table: ai_compare_runs
+### Columns:
+```
 id bigint AI PK 
 report_id bigint 
 file_id bigint 
@@ -147,9 +181,12 @@ status enum('대기','진행중','완료','실패')
 created_at datetime 
 started_at datetime 
 finished_at datetime
+```
+---
 
-Table: ai_compare_results
-Columns:
+## Table: ai_compare_results
+### Columns:
+```
 id bigint AI PK 
 compare_run_id bigint 
 model_name varchar(100) 
@@ -170,9 +207,12 @@ result_json json
 status enum('대기','완료','실패') 
 error_message varchar(255) 
 created_at datetime
+```
+---
 
-Table: admin_logs
-Columns:
+## Table: admin_logs
+### Columns:
+```
 id bigint AI PK 
 admin_user_id bigint 
 action_type varchar(100) 
@@ -180,3 +220,5 @@ target_type varchar(100)
 target_id bigint 
 action_detail varchar(255) 
 created_at datetime
+```
+---
