@@ -9,6 +9,17 @@ AI 기술을 활용해 도로 위 위험 요소를 실시간으로 분석하고,
 
 ---
 
+## 발표 자료
+[404RNF 발표자료 PDF](./404RNF-mini_2026.04.03%28FFFFFinal%29.pdf)
+
+## 시연 영상
+[![404 R·N·F AI 시연 영상](https://img.youtube.com/vi/abc123xyz/0.jpg)](https://www.youtube.com/watch?v=abc123xyz)
+
+## 코드리뷰
+[404RNF 코드리뷰 PDF](./404RNF-mini_code.pdf)
+
+
+---
 
 ### 🚧 AI 기반 낙하물 탐지 및 위험 알림 시스템
 
