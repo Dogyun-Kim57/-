@@ -86,6 +86,46 @@ class RealtimeMonitorService:
         return normalized
 
     @staticmethod
+    def _calculate_priority_score(risk_level, status, created_at, confidence):
+        """
+        운영자 관점 우선 처리 점수
+        - 위험도
+        - 상태
+        - 최신성
+        - confidence
+        """
+        score = 0
+
+        if risk_level == "긴급":
+            score += 100
+        elif risk_level == "위험":
+            score += 60
+        elif risk_level == "주의":
+            score += 30
+
+        if status == "접수":
+            score += 15
+        elif status == "확인중":
+            score += 8
+        elif status == "처리완료":
+            score += 0
+
+        if created_at:
+            diff_hours = (datetime.now() - created_at).total_seconds() / 3600
+
+            if diff_hours <= 1:
+                score += 20
+            elif diff_hours <= 6:
+                score += 12
+            elif diff_hours <= 24:
+                score += 6
+
+        conf = RealtimeMonitorService._safe_float(confidence, default=0.0)
+        score += min(int(conf * 10), 10)
+
+        return score
+
+    @staticmethod
     def get_summary_cards(days=None):
         days = RealtimeMonitorService._sanitize_days(days)
         return RealtimeMonitorRepository.get_summary_data(days=days)
@@ -105,6 +145,14 @@ class RealtimeMonitorService:
                 continue
             seen_report_ids.add(row.report_id)
 
+            confidence = round(RealtimeMonitorService._safe_float(row.confidence), 2)
+            priority_score = RealtimeMonitorService._calculate_priority_score(
+                risk_level=row.risk_level,
+                status=row.status,
+                created_at=row.created_at,
+                confidence=confidence
+            )
+
             result.append({
                 "report_id": row.report_id,
                 "title": row.title or "제목 없음",
@@ -114,13 +162,13 @@ class RealtimeMonitorService:
                 "risk_level": row.risk_level or "주의",
                 "status": row.status or "-",
                 "detected_label": row.detected_label or "미확인",
-                "confidence": round(RealtimeMonitorService._safe_float(row.confidence), 2),
+                "confidence": confidence,
+                "priority_score": priority_score,
                 "created_at": RealtimeMonitorService._format_datetime(row.created_at),
                 "time_ago": RealtimeMonitorService._time_ago(row.created_at),
                 "thumbnail_path": RealtimeMonitorService._normalize_file_path(getattr(row, "file_path", "")),
                 "file_type": getattr(row, "file_type", None) or "-"
             })
-
 
         return result
 
@@ -130,7 +178,7 @@ class RealtimeMonitorService:
         limit = RealtimeMonitorService._sanitize_limit(limit, default=20, max_limit=200)
 
         rows = RealtimeMonitorRepository.get_recent_risk_list(limit=limit, days=days)
-        print([row.risk_level for row in rows])
+
         result = []
         seen_report_ids = set()
 
@@ -139,6 +187,14 @@ class RealtimeMonitorService:
                 continue
             seen_report_ids.add(row.report_id)
 
+            confidence = round(RealtimeMonitorService._safe_float(row.confidence), 2)
+            priority_score = RealtimeMonitorService._calculate_priority_score(
+                risk_level=row.risk_level,
+                status=row.status,
+                created_at=row.created_at,
+                confidence=confidence
+            )
+
             result.append({
                 "report_id": row.report_id,
                 "title": row.title or "제목 없음",
@@ -146,7 +202,8 @@ class RealtimeMonitorService:
                 "risk_level": row.risk_level or "주의",
                 "status": row.status or "-",
                 "detected_label": row.detected_label or "미확인",
-                "confidence": round(RealtimeMonitorService._safe_float(row.confidence), 2),
+                "confidence": confidence,
+                "priority_score": priority_score,
                 "created_at": RealtimeMonitorService._format_datetime(row.created_at),
                 "time_ago": RealtimeMonitorService._time_ago(row.created_at)
             })
@@ -160,6 +217,18 @@ class RealtimeMonitorService:
         if not row:
             return None
 
+        confidence = round(
+            RealtimeMonitorService._safe_float(getattr(row, "confidence", None)),
+            2
+        )
+
+        priority_score = RealtimeMonitorService._calculate_priority_score(
+            risk_level=getattr(row, "risk_level", None),
+            status=getattr(row, "status", None),
+            created_at=getattr(row, "created_at", None),
+            confidence=confidence
+        )
+
         detail = {
             "report_id": getattr(row, "report_id", None),
             "title": getattr(row, "title", None) or "제목 없음",
@@ -172,13 +241,11 @@ class RealtimeMonitorService:
             "report_type": getattr(row, "report_type", None) or "-",
             "created_at": RealtimeMonitorService._format_datetime(getattr(row, "created_at", None)),
             "time_ago": RealtimeMonitorService._time_ago(getattr(row, "created_at", None)),
+            "priority_score": priority_score,
 
             "detection_id": getattr(row, "detection_id", None),
             "detected_label": getattr(row, "detected_label", None) or "미확인",
-            "confidence": round(
-                RealtimeMonitorService._safe_float(getattr(row, "confidence", None)),
-                2
-            ),
+            "confidence": confidence,
             "bbox": {
                 "x1": RealtimeMonitorService._safe_int(getattr(row, "bbox_x1", None)),
                 "y1": RealtimeMonitorService._safe_int(getattr(row, "bbox_y1", None)),

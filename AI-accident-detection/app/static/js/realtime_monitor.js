@@ -1,6 +1,7 @@
 let realtimeMonitorMap = null;
 let realtimeMonitorInfoWindow = null;
 let realtimeMonitorMarkers = [];
+let realtimeMarkerCluster = null;
 let realtimeRoutePolyline = null;
 
 let ALL_MAP_POINTS = [];
@@ -9,7 +10,8 @@ let ALL_RISK_LIST = [];
 let CURRENT_RISK_FILTER = "all";
 let CURRENT_USER_POSITION = null;
 let CURRENT_RADIUS_KM = 3;
-let CURRENT_SORT_TYPE = "risk_desc";
+let CURRENT_SORT_TYPE = "priority_desc";
+let CURRENT_TIME_FILTER = "24h";
 
 let CURRENT_ROUTE_ACTIVE = false;
 let CURRENT_ROUTE_POINTS = [];
@@ -18,18 +20,11 @@ let CURRENT_ROUTE_RADIUS_KM = 0.5;
 let CURRENT_VISIBLE_DAYS = 180;
 let HAS_INITIAL_MAP_FIT = false;
 
-let INFO_WINDOW_CLOSE_TIMER = null;
-let MONITOR_AUTO_REFRESH_TIMER = null;
-const MONITOR_AUTO_REFRESH_INTERVAL_MS = 3000;
-let MONITOR_REFRESH_IN_PROGRESS = false;
-
-// 자동완성 관련 상태
 let ORIGIN_AUTOCOMPLETE = null;
 let DESTINATION_AUTOCOMPLETE = null;
 let SELECTED_ORIGIN_PLACE = null;
 let SELECTED_DESTINATION_PLACE = null;
 let ROUTE_AUTOCOMPLETE_AVAILABLE = false;
-let ROUTE_AUTOCOMPLETE_NOTICE_SHOWN = false;
 
 function showLoading(text = "데이터 불러오는 중...") {
     const overlay = document.getElementById("global-loading-overlay");
@@ -51,12 +46,13 @@ function hideLoading() {
     }
 }
 
-async function fetchJson(url) {
+async function fetchJson(url, options = {}) {
     const response = await fetch(url, {
-        method: "GET",
         headers: {
-            "X-Requested-With": "XMLHttpRequest"
-        }
+            "X-Requested-With": "XMLHttpRequest",
+            ...(options.headers || {})
+        },
+        ...options
     });
 
     let json = null;
@@ -128,10 +124,50 @@ function parseDateValue(value) {
     return Number.isNaN(time) ? 0 : time;
 }
 
+function isWithinSelectedTime(createdAt) {
+    if (CURRENT_TIME_FILTER === "all") {
+        return true;
+    }
+
+    const createdTime = new Date(createdAt).getTime();
+    if (Number.isNaN(createdTime)) {
+        return false;
+    }
+
+    const now = Date.now();
+    const diffMs = now - createdTime;
+
+    const HOUR = 60 * 60 * 1000;
+    const DAY = 24 * HOUR;
+
+    switch (CURRENT_TIME_FILTER) {
+        case "1h":
+            return diffMs <= 1 * HOUR;
+        case "6h":
+            return diffMs <= 6 * HOUR;
+        case "24h":
+            return diffMs <= 24 * HOUR;
+        case "7d":
+            return diffMs <= 7 * DAY;
+        default:
+            return true;
+    }
+}
+
 function sortRiskItems(items) {
     const copied = [...items];
 
     copied.sort((a, b) => {
+        if (CURRENT_SORT_TYPE === "priority_desc") {
+            const diff = Number(b.priority_score || 0) - Number(a.priority_score || 0);
+            if (diff !== 0) return diff;
+
+            const riskDiff = getRiskPriority(b.risk_level) - getRiskPriority(a.risk_level);
+            if (riskDiff !== 0) return riskDiff;
+
+            return parseDateValue(b.created_at) - parseDateValue(a.created_at);
+        }
+
         if (CURRENT_SORT_TYPE === "confidence_desc") {
             const diff = parseConfidence(b.confidence) - parseConfidence(a.confidence);
             if (diff !== 0) return diff;
@@ -165,8 +201,56 @@ function sortRiskItems(items) {
 }
 
 function clearMarkers() {
+    if (realtimeMarkerCluster) {
+        realtimeMarkerCluster.clearMarkers();
+        realtimeMarkerCluster = null;
+    }
+
     realtimeMonitorMarkers.forEach((marker) => marker.setMap(null));
     realtimeMonitorMarkers = [];
+}
+
+function createMarkerCluster() {
+    if (!window.markerClusterer || !window.markerClusterer.MarkerClusterer) {
+        console.warn("MarkerClusterer 라이브러리를 찾지 못했습니다.");
+        return;
+    }
+
+    if (!realtimeMonitorMap || !realtimeMonitorMarkers.length) {
+        return;
+    }
+
+    realtimeMarkerCluster = new markerClusterer.MarkerClusterer({
+        map: realtimeMonitorMap,
+        markers: realtimeMonitorMarkers,
+        renderer: {
+            render({ count, position }) {
+                const color =
+                    count >= 20 ? "#dc2626" :
+                    count >= 10 ? "#ea580c" :
+                    "#2563eb";
+
+                return new google.maps.Marker({
+                    position,
+                    icon: {
+                        path: google.maps.SymbolPath.CIRCLE,
+                        fillColor: color,
+                        fillOpacity: 0.9,
+                        strokeColor: "#ffffff",
+                        strokeWeight: 2,
+                        scale: Math.min(24, 14 + Math.floor(count / 2))
+                    },
+                    label: {
+                        text: String(count),
+                        color: "#ffffff",
+                        fontSize: "12px",
+                        fontWeight: "900"
+                    },
+                    zIndex: Number(google.maps.Marker.MAX_ZINDEX) + count
+                });
+            }
+        }
+    });
 }
 
 function hideRouteSummary() {
@@ -390,58 +474,30 @@ function buildInfoWindowContent(item) {
                 <strong>위험도:</strong> ${escapeHtml(item.risk_level || "-")}
             </div>
             <div class="map-info-row" style="font-size: 13px; margin-bottom: 4px;">
-                <strong>장애물:</strong> ${escapeHtml(item.detected_label || "-")}
+                <strong>탐지 객체:</strong> ${escapeHtml(item.detected_label || "-")}
             </div>
             <div class="map-info-row" style="font-size: 13px; margin-bottom: 4px;">
-                <strong>접수 시간:</strong> ${escapeHtml(item.created_at || "-")}
+                <strong>신뢰도:</strong> ${escapeHtml(item.confidence ?? 0)}
             </div>
-            <div class="map-info-row" style="font-size: 13px; margin-bottom: 4px;">
-                <strong>처리 상태:</strong> ${escapeHtml(item.status || "-")}
+            <div class="map-priority-row">
+                우선 처리 점수: ${escapeHtml(item.priority_score ?? 0)}점
             </div>
-            <div class="map-info-row" style="font-size: 13px;">
-                <strong>신뢰도:</strong> ${escapeHtml(String(item.confidence ?? "-"))}
-            </div>
+
+            <button type="button" class="map-detail-btn">
+                상세 보기
+            </button>
         </div>
     `;
-}
-
-function openMarkerPreview(marker, item) {
-    if (!realtimeMonitorInfoWindow) {
-        realtimeMonitorInfoWindow = new google.maps.InfoWindow();
-    }
-
-    if (INFO_WINDOW_CLOSE_TIMER) {
-        clearTimeout(INFO_WINDOW_CLOSE_TIMER);
-        INFO_WINDOW_CLOSE_TIMER = null;
-    }
-
-    realtimeMonitorInfoWindow.setContent(buildInfoWindowContent(item));
-    realtimeMonitorInfoWindow.open({
-        anchor: marker,
-        map: realtimeMonitorMap
-    });
-}
-
-function closeMarkerPreviewWithDelay(delay = 120) {
-    if (INFO_WINDOW_CLOSE_TIMER) {
-        clearTimeout(INFO_WINDOW_CLOSE_TIMER);
-    }
-
-    INFO_WINDOW_CLOSE_TIMER = setTimeout(() => {
-        if (realtimeMonitorInfoWindow) {
-            realtimeMonitorInfoWindow.close();
-        }
-    }, delay);
 }
 
 function createRiskListItem(item) {
     const wrapper = document.createElement("div");
     wrapper.className = `risk-list-item risk-${item.risk_level || "주의"}`;
-    wrapper.dataset.reportId = item.report_id || "";
+    wrapper.dataset.reportId = item.report_id;
 
     wrapper.innerHTML = `
         <div class="risk-list-top">
-            <span class="risk-badge risk-${item.risk_level || "주의"}">${escapeHtml(item.risk_level || "주의")}</span>
+            <span class="risk-badge risk-${escapeHtml(item.risk_level || "주의")}">${escapeHtml(item.risk_level || "주의")}</span>
             <span class="risk-time">${escapeHtml(item.time_ago || "-")}</span>
         </div>
 
@@ -453,148 +509,59 @@ function createRiskListItem(item) {
         </div>
 
         <div class="risk-extra">
-            <span>신고ID: ${escapeHtml(String(item.report_id || "-"))}</span>
-            <span>신뢰도: ${escapeHtml(String(item.confidence ?? "-"))}</span>
+            <span>신고ID: ${escapeHtml(item.report_id)}</span>
+            <span>신뢰도: ${escapeHtml(item.confidence ?? 0)}</span>
+            <span class="priority-score-badge">우선 ${escapeHtml(item.priority_score ?? 0)}점</span>
         </div>
     `;
 
     wrapper.addEventListener("click", () => {
-        if (item.report_id) {
-            openRiskDetailModal(item.report_id);
+        const reportId = wrapper.dataset.reportId;
+        if (reportId) {
+            openRiskDetailModal(reportId);
         }
     });
 
     return wrapper;
 }
 
-function haversineDistanceKm(lat1, lng1, lat2, lng2) {
-    const toRad = (deg) => deg * (Math.PI / 180);
-    const R = 6371;
-
-    const dLat = toRad(lat2 - lat1);
-    const dLng = toRad(lng2 - lng1);
-
-    const a =
-        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-        Math.sin(dLng / 2) * Math.sin(dLng / 2);
-
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-}
-
-function matchesRiskFilter(item) {
-    if (CURRENT_RISK_FILTER === "all") {
-        return true;
-    }
-    return item.risk_level === CURRENT_RISK_FILTER;
-}
-
-function matchesNearbyFilter(item) {
-    if (!CURRENT_USER_POSITION) {
-        return true;
-    }
-
-    const lat = Number(item.latitude);
-    const lng = Number(item.longitude);
-
-    if (!lat || !lng) {
-        return false;
-    }
-
-    const distance = haversineDistanceKm(
-        CURRENT_USER_POSITION.lat,
-        CURRENT_USER_POSITION.lng,
-        lat,
-        lng
-    );
-
-    return distance <= CURRENT_RADIUS_KM;
-}
-
-function distancePointToSegmentKm(point, start, end) {
-    const latScale = 111;
-    const lngScale = 111 * Math.cos(((start.lat + end.lat) / 2) * Math.PI / 180);
-
-    const px = point.lng * lngScale;
-    const py = point.lat * latScale;
-    const x1 = start.lng * lngScale;
-    const y1 = start.lat * latScale;
-    const x2 = end.lng * lngScale;
-    const y2 = end.lat * latScale;
-
-    const dx = x2 - x1;
-    const dy = y2 - y1;
-
-    if (dx === 0 && dy === 0) {
-        return Math.sqrt((px - x1) ** 2 + (py - y1) ** 2);
-    }
-
-    const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)));
-    const projX = x1 + t * dx;
-    const projY = y1 + t * dy;
-
-    return Math.sqrt((px - projX) ** 2 + (py - projY) ** 2);
-}
-
-function isPointNearRoute(item) {
-    if (!CURRENT_ROUTE_ACTIVE || CURRENT_ROUTE_POINTS.length < 2) {
-        return true;
-    }
-
-    const point = {
-        lat: Number(item.latitude),
-        lng: Number(item.longitude)
-    };
-
-    if (!point.lat || !point.lng) {
-        return false;
-    }
-
-    let minDistance = Infinity;
-
-    for (let i = 0; i < CURRENT_ROUTE_POINTS.length - 1; i += 1) {
-        const start = CURRENT_ROUTE_POINTS[i];
-        const end = CURRENT_ROUTE_POINTS[i + 1];
-        const distance = distancePointToSegmentKm(point, start, end);
-
-        if (distance < minDistance) {
-            minDistance = distance;
-        }
-    }
-
-    return minDistance <= CURRENT_ROUTE_RADIUS_KM;
-}
-
 function getFilteredMapPoints() {
-    return ALL_MAP_POINTS.filter((item) => {
-        return matchesRiskFilter(item) && matchesNearbyFilter(item) && isPointNearRoute(item);
-    });
+    let items = [...ALL_MAP_POINTS];
+
+    if (CURRENT_RISK_FILTER !== "all") {
+        items = items.filter((item) => item.risk_level === CURRENT_RISK_FILTER);
+    }
+
+    items = items.filter((item) => isWithinSelectedTime(item.created_at));
+
+    return sortRiskItems(items);
 }
 
 function getFilteredRiskList() {
-    const filtered = ALL_RISK_LIST.filter((item) => {
-        if (!matchesRiskFilter(item)) {
-            return false;
-        }
+    let items = [...ALL_RISK_LIST];
 
-        const matched = ALL_MAP_POINTS.find((p) => p.report_id === item.report_id);
-        if (!matched) {
-            return !CURRENT_USER_POSITION && !CURRENT_ROUTE_ACTIVE;
-        }
+    if (CURRENT_RISK_FILTER !== "all") {
+        items = items.filter((item) => item.risk_level === CURRENT_RISK_FILTER);
+    }
 
-        if (!matchesNearbyFilter(matched)) {
-            return false;
-        }
+    items = items.filter((item) => isWithinSelectedTime(item.created_at));
 
-        if (!isPointNearRoute(matched)) {
-            return false;
-        }
+    return sortRiskItems(items);
+}
 
-        return true;
-    });
-
-    return sortRiskItems(filtered);
+function getTimeFilterLabel() {
+    switch (CURRENT_TIME_FILTER) {
+        case "1h":
+            return "최근 1시간";
+        case "6h":
+            return "최근 6시간";
+        case "24h":
+            return "최근 24시간";
+        case "7d":
+            return "최근 7일";
+        default:
+            return "전체 기간";
+    }
 }
 
 function updateFilterStatus() {
@@ -602,25 +569,12 @@ function updateFilterStatus() {
     if (!statusEl) return;
 
     const riskText = CURRENT_RISK_FILTER === "all" ? "전체 위험도" : `${CURRENT_RISK_FILTER}만`;
-    const nearbyText = CURRENT_USER_POSITION
-        ? `내 주변 반경 ${CURRENT_RADIUS_KM}km 기준으로`
-        : "전체 지역 기준으로";
+    const timeText = getTimeFilterLabel();
 
-    const routeText = CURRENT_ROUTE_ACTIVE
-        ? ` 경로 반경 ${CURRENT_ROUTE_RADIUS_KM}km 조건도 함께 적용 중입니다.`
-        : "";
-
-    let sortText = " 위험도 높은 순으로 정렬 중입니다.";
-    if (CURRENT_SORT_TYPE === "latest") {
-        sortText = " 최신순으로 정렬 중입니다.";
-    } else if (CURRENT_SORT_TYPE === "confidence_desc") {
-        sortText = " 신뢰도 높은 순으로 정렬 중입니다.";
-    }
-
-    statusEl.textContent = `${nearbyText} ${riskText} 표시하고 있습니다.${routeText}${sortText}`;
+    statusEl.textContent = `${timeText} 기준으로 ${riskText} 데이터를 표시하고 있습니다.`;
 }
 
-function renderMapPoints(points, options = {}) {
+function renderMapPoints(items, options = {}) {
     if (!realtimeMonitorMap) return;
 
     const preserveView = options.preserveView ?? true;
@@ -632,11 +586,13 @@ function renderMapPoints(points, options = {}) {
     const bounds = new google.maps.LatLngBounds();
     let validCount = 0;
 
-    points.forEach((item) => {
+    items.forEach((item) => {
         const lat = Number(item.latitude);
         const lng = Number(item.longitude);
 
-        if (!lat || !lng) return;
+        if (Number.isNaN(lat) || Number.isNaN(lng)) {
+            return;
+        }
 
         const marker = new google.maps.Marker({
             position: { lat, lng },
@@ -645,24 +601,31 @@ function renderMapPoints(points, options = {}) {
             icon: getMarkerIconByRiskLevel(item.risk_level)
         });
 
-        marker.addListener("mouseover", () => {
-            openMarkerPreview(marker, item);
-        });
-
-        marker.addListener("mouseout", () => {
-            closeMarkerPreviewWithDelay(120);
-        });
-
         marker.addListener("click", () => {
-            if (item.report_id) {
-                openRiskDetailModal(item.report_id);
+            if (!realtimeMonitorInfoWindow) {
+                realtimeMonitorInfoWindow = new google.maps.InfoWindow();
             }
+
+            realtimeMonitorInfoWindow.setContent(buildInfoWindowContent(item));
+            realtimeMonitorInfoWindow.open({
+                anchor: marker,
+                map: realtimeMonitorMap
+            });
+
+            google.maps.event.addListenerOnce(realtimeMonitorInfoWindow, "domready", () => {
+                const btn = document.querySelector(".map-detail-btn");
+                if (btn) {
+                    btn.addEventListener("click", () => openRiskDetailModal(item.report_id));
+                }
+            });
         });
 
         realtimeMonitorMarkers.push(marker);
         bounds.extend({ lat, lng });
         validCount += 1;
     });
+
+    createMarkerCluster();
 
     if (CURRENT_USER_POSITION) {
         const userMarker = new google.maps.Marker({
@@ -778,7 +741,7 @@ async function loadRiskList() {
 
     const url = buildApiUrl(window.REALTIME_MONITOR_CONFIG.riskListApiUrl, {
         days: CURRENT_VISIBLE_DAYS,
-        limit: 20
+        limit: 50
     });
 
     const result = await fetchJson(url);
@@ -790,12 +753,6 @@ async function loadRiskList() {
 async function refreshRealtimeMonitorData(options = {}) {
     const preserveView = options.preserveView ?? true;
     const showOverlay = options.showOverlay ?? true;
-
-    if (MONITOR_REFRESH_IN_PROGRESS) {
-        return;
-    }
-
-    MONITOR_REFRESH_IN_PROGRESS = true;
 
     try {
         if (showOverlay) {
@@ -809,40 +766,12 @@ async function refreshRealtimeMonitorData(options = {}) {
         ]);
 
         applyFiltersAndRender({ preserveView });
-
-        const modal = document.getElementById("risk-detail-modal");
-        if (modal && !modal.classList.contains("hidden")) {
-            const openReportId = document.getElementById("risk-detail-report-id")?.textContent;
-            if (openReportId && openReportId !== "-") {
-                openRiskDetailModal(openReportId);
-            }
-        }
     } catch (error) {
         console.error("탐지 현황 데이터 갱신 실패:", error);
     } finally {
-        MONITOR_REFRESH_IN_PROGRESS = false;
-
         if (showOverlay) {
             hideLoading();
         }
-    }
-}
-
-function startRealtimeMonitorAutoRefresh() {
-    stopRealtimeMonitorAutoRefresh();
-
-    MONITOR_AUTO_REFRESH_TIMER = setInterval(() => {
-        refreshRealtimeMonitorData({
-            preserveView: true,
-            showOverlay: false
-        });
-    }, MONITOR_AUTO_REFRESH_INTERVAL_MS);
-}
-
-function stopRealtimeMonitorAutoRefresh() {
-    if (MONITOR_AUTO_REFRESH_TIMER) {
-        clearInterval(MONITOR_AUTO_REFRESH_TIMER);
-        MONITOR_AUTO_REFRESH_TIMER = null;
     }
 }
 
@@ -877,7 +806,17 @@ function bindSortSelect() {
     if (!sortSelect) return;
 
     sortSelect.addEventListener("change", () => {
-        CURRENT_SORT_TYPE = sortSelect.value || "risk_desc";
+        CURRENT_SORT_TYPE = sortSelect.value || "priority_desc";
+        applyFiltersAndRender({ preserveView: true });
+    });
+}
+
+function bindTimeFilterSelect() {
+    const timeSelect = document.getElementById("recent-time-filter");
+    if (!timeSelect) return;
+
+    timeSelect.addEventListener("change", () => {
+        CURRENT_TIME_FILTER = timeSelect.value || "24h";
         applyFiltersAndRender({ preserveView: true });
     });
 }
@@ -888,7 +827,7 @@ function bindNearbyButtons() {
 
     if (findBtn) {
         findBtn.addEventListener("click", () => {
-            alert("현재 위치 기반 기능은 API 권한 연동 후 사용할 수 있습니다. 지금은 전체 보기, 위험도 필터, 경로 위험 보기를 중심으로 확인해주세요.");
+            alert("현재 위치 기반 기능은 이후 확장용입니다. 지금은 전체 보기, 위험도 필터, 경로 위험 보기를 중심으로 확인해주세요.");
         });
     }
 
@@ -904,216 +843,112 @@ function initRouteAutocomplete() {
     const originInput = document.getElementById("route-origin");
     const destinationInput = document.getElementById("route-destination");
 
-    if (!originInput || !destinationInput) {
-        return;
-    }
-
-    if (!google.maps.places || !google.maps.places.Autocomplete) {
+    if (!window.google || !google.maps || !google.maps.places) {
         ROUTE_AUTOCOMPLETE_AVAILABLE = false;
-
-        if (!ROUTE_AUTOCOMPLETE_NOTICE_SHOWN) {
-            ROUTE_AUTOCOMPLETE_NOTICE_SHOWN = true;
-            alert("현재 자동완성 기능을 사용할 수 없습니다. Google Maps Places API 설정을 확인해주세요.");
-        }
         return;
     }
 
-    ROUTE_AUTOCOMPLETE_AVAILABLE = true;
+    if (!originInput || !destinationInput) return;
 
     ORIGIN_AUTOCOMPLETE = new google.maps.places.Autocomplete(originInput, {
-        fields: ["place_id", "formatted_address", "name", "geometry"],
-        componentRestrictions: { country: "kr" }
+        fields: ["formatted_address", "geometry", "name"]
     });
 
     DESTINATION_AUTOCOMPLETE = new google.maps.places.Autocomplete(destinationInput, {
-        fields: ["place_id", "formatted_address", "name", "geometry"],
-        componentRestrictions: { country: "kr" }
+        fields: ["formatted_address", "geometry", "name"]
     });
 
     ORIGIN_AUTOCOMPLETE.addListener("place_changed", () => {
         SELECTED_ORIGIN_PLACE = ORIGIN_AUTOCOMPLETE.getPlace();
-        console.log("[Route] 출발지 선택:", SELECTED_ORIGIN_PLACE);
     });
 
     DESTINATION_AUTOCOMPLETE.addListener("place_changed", () => {
         SELECTED_DESTINATION_PLACE = DESTINATION_AUTOCOMPLETE.getPlace();
-        console.log("[Route] 도착지 선택:", SELECTED_DESTINATION_PLACE);
     });
 
-    originInput.addEventListener("input", () => {
-        if (!originInput.value.trim()) {
-            SELECTED_ORIGIN_PLACE = null;
-        }
-    });
-
-    destinationInput.addEventListener("input", () => {
-        if (!destinationInput.value.trim()) {
-            SELECTED_DESTINATION_PLACE = null;
-        }
-    });
-}
-
-function drawKakaoRoutePolyline(path) {
-    if (!realtimeMonitorMap) return;
-
-    if (realtimeRoutePolyline) {
-        realtimeRoutePolyline.setMap(null);
-        realtimeRoutePolyline = null;
-    }
-
-    if (!Array.isArray(path) || path.length === 0) {
-        return;
-    }
-
-    realtimeRoutePolyline = new google.maps.Polyline({
-        path: path,
-        geodesic: true,
-        strokeColor: "#2563eb",
-        strokeOpacity: 0.9,
-        strokeWeight: 6
-    });
-
-    realtimeRoutePolyline.setMap(realtimeMonitorMap);
+    ROUTE_AUTOCOMPLETE_AVAILABLE = true;
 }
 
 function updateKakaoRouteMeta(distanceM, durationS) {
     const subtitle = document.getElementById("risk-list-subtitle");
     if (!subtitle) return;
 
-    const distanceKm = (Number(distanceM || 0) / 1000).toFixed(1);
-    const durationMin = Math.round(Number(durationS || 0) / 60);
+    const distanceKm = distanceM ? (Number(distanceM) / 1000).toFixed(1) : "-";
+    const durationMin = durationS ? Math.round(Number(durationS) / 60) : "-";
 
-    subtitle.textContent = `입력한 이동 경로 주변의 위험 지점을 표시하고 있습니다. 예상 거리 ${distanceKm}km · 예상 시간 ${durationMin}분`;
-}
-
-function validateRouteInput(inputValue, label) {
-    if (!inputValue) {
-        return `${label}를 입력해주세요.`;
-    }
-    return null;
+    subtitle.textContent = `선택한 경로 기준 위험 지점을 분석 중입니다. 예상 거리 ${distanceKm}km / 소요 ${durationMin}분`;
 }
 
 async function requestKakaoRoute(originPlace, destinationPlace) {
-    if (!window.REALTIME_MONITOR_CONFIG?.kakaoRouteApiUrl) {
-        throw new Error("카카오 경로 API URL이 설정되지 않았습니다.");
-    }
-
-    if (!originPlace?.geometry?.location || !destinationPlace?.geometry?.location) {
-        throw new Error("출발지/도착지 geometry 정보가 없습니다.");
-    }
-
     const originLat = originPlace.geometry.location.lat();
     const originLng = originPlace.geometry.location.lng();
     const destLat = destinationPlace.geometry.location.lat();
     const destLng = destinationPlace.geometry.location.lng();
 
-    const url = buildApiUrl(window.REALTIME_MONITOR_CONFIG.kakaoRouteApiUrl, {
-        origin_lat: originLat,
-        origin_lng: originLng,
-        dest_lat: destLat,
-        dest_lng: destLng
-    });
+    const url = new URL(window.REALTIME_MONITOR_CONFIG.kakaoRouteApiUrl, window.location.origin);
+    url.searchParams.set("origin_lat", originLat);
+    url.searchParams.set("origin_lng", originLng);
+    url.searchParams.set("dest_lat", destLat);
+    url.searchParams.set("dest_lng", destLng);
 
-    console.log("[KakaoRoute] 요청 URL:", url);
+    const result = await fetchJson(url.toString());
+    return result.data || result;
+}
 
-    const result = await fetchJson(url);
+function drawRoutePolyline(path) {
+    if (!realtimeMonitorMap || !Array.isArray(path) || path.length < 2) return;
 
-    if (!result.success) {
-        throw new Error(result.message || "카카오 경로 조회 실패");
+    if (realtimeRoutePolyline) {
+        realtimeRoutePolyline.setMap(null);
+        realtimeRoutePolyline = null;
     }
 
-    return result.data;
+    realtimeRoutePolyline = new google.maps.Polyline({
+        path: path,
+        map: realtimeMonitorMap,
+        strokeColor: "#3b82f6",
+        strokeOpacity: 0.95,
+        strokeWeight: 5
+    });
 }
 
 function bindRouteRiskButtons() {
     const findBtn = document.getElementById("find-route-risk-btn");
     const resetBtn = document.getElementById("reset-route-risk-btn");
+    const radiusSelect = document.getElementById("route-risk-radius");
 
     if (findBtn) {
         findBtn.addEventListener("click", async () => {
-            const originInput = document.getElementById("route-origin");
-            const destinationInput = document.getElementById("route-destination");
-            const radius = Number(document.getElementById("route-risk-radius")?.value || 0.5);
-
-            const originValue = originInput?.value?.trim() || "";
-            const destinationValue = destinationInput?.value?.trim() || "";
-
-            const originError = validateRouteInput(originValue, "출발지");
-            if (originError) {
-                alert(originError);
-                originInput?.focus();
+            if (!ROUTE_AUTOCOMPLETE_AVAILABLE) {
+                alert("장소 자동완성 기능을 사용할 수 없습니다.");
                 return;
             }
 
-            const destinationError = validateRouteInput(destinationValue, "도착지");
-            if (destinationError) {
-                alert(destinationError);
-                destinationInput?.focus();
-                return;
-            }
-
-            if (!SELECTED_ORIGIN_PLACE?.geometry?.location) {
-                alert("출발지는 자동완성 목록에서 정확히 선택해주세요.");
-                originInput?.focus();
-                return;
-            }
-
-            if (!SELECTED_DESTINATION_PLACE?.geometry?.location) {
-                alert("도착지는 자동완성 목록에서 정확히 선택해주세요.");
-                destinationInput?.focus();
-                return;
-            }
-
-            const originLat = SELECTED_ORIGIN_PLACE.geometry.location.lat();
-            const originLng = SELECTED_ORIGIN_PLACE.geometry.location.lng();
-            const destLat = SELECTED_DESTINATION_PLACE.geometry.location.lat();
-            const destLng = SELECTED_DESTINATION_PLACE.geometry.location.lng();
-
-            if (
-                Math.abs(originLat - destLat) < 0.00001 &&
-                Math.abs(originLng - destLng) < 0.00001
-            ) {
-                alert("출발지와 도착지가 동일합니다. 서로 다른 위치를 선택해주세요.");
+            if (!SELECTED_ORIGIN_PLACE || !SELECTED_DESTINATION_PLACE) {
+                alert("출발지와 도착지를 자동완성 목록에서 선택해주세요.");
                 return;
             }
 
             try {
-                showLoading("카카오 경로 분석 중...");
+                showLoading("경로 위험 분석 중...");
 
-                console.log("[KakaoRoute] 출발지:", SELECTED_ORIGIN_PLACE);
-                console.log("[KakaoRoute] 도착지:", SELECTED_DESTINATION_PLACE);
+                CURRENT_ROUTE_RADIUS_KM = Number(radiusSelect?.value || 0.5);
 
                 const routeData = await requestKakaoRoute(
                     SELECTED_ORIGIN_PLACE,
                     SELECTED_DESTINATION_PLACE
                 );
 
-                const path = routeData.path || [];
-                if (!path.length) {
-                    alert("카카오 길찾기 결과에 경로 좌표가 없습니다.");
-                    return;
+                const path = routeData.path || routeData.routes?.[0]?.path || [];
+
+                if (!Array.isArray(path) || path.length < 2) {
+                    throw new Error("유효한 경로 좌표가 없습니다.");
                 }
 
-                drawKakaoRoutePolyline(path);
-
-                CURRENT_ROUTE_POINTS = path.map((p) => ({
-                    lat: Number(p.lat),
-                    lng: Number(p.lng)
-                }));
-                CURRENT_ROUTE_RADIUS_KM = radius;
                 CURRENT_ROUTE_ACTIVE = true;
+                CURRENT_ROUTE_POINTS = path;
 
-                const title = document.getElementById("risk-list-title");
-                const subtitle = document.getElementById("risk-list-subtitle");
-
-                if (title) {
-                    title.textContent = "경로 위험 리스트";
-                }
-
-                if (subtitle) {
-                    subtitle.textContent = "입력한 이동 경로 주변의 위험 지점만 표시하고 있습니다.";
-                }
-
+                drawRoutePolyline(path);
                 updateKakaoRouteMeta(routeData.distance_m, routeData.duration_s);
                 applyFiltersAndRender({ preserveView: true });
             } catch (error) {
@@ -1133,46 +968,6 @@ function bindRouteRiskButtons() {
     }
 }
 
-function initRealtimeMonitorMap() {
-    const mapElement = document.getElementById("realtime-monitor-map");
-    if (!mapElement) return;
-
-    realtimeMonitorMap = new google.maps.Map(mapElement, {
-        center: { lat: 37.5665, lng: 126.9780 },
-        zoom: 11,
-        mapTypeControl: true,
-        fullscreenControl: true,
-        streetViewControl: false
-    });
-
-    realtimeMonitorInfoWindow = new google.maps.InfoWindow();
-
-    initRouteAutocomplete();
-
-    refreshRealtimeMonitorData({
-        preserveView: false,
-        showOverlay: true
-    });
-
-    startRealtimeMonitorAutoRefresh();
-
-    document.addEventListener("visibilitychange", () => {
-        if (document.hidden) {
-            stopRealtimeMonitorAutoRefresh();
-        } else {
-            refreshRealtimeMonitorData({
-                preserveView: true,
-                showOverlay: false
-            });
-            startRealtimeMonitorAutoRefresh();
-        }
-    });
-
-    window.addEventListener("beforeunload", () => {
-        stopRealtimeMonitorAutoRefresh();
-    });
-}
-
 function getRiskDetailElements() {
     return {
         modal: document.getElementById("risk-detail-modal"),
@@ -1188,6 +983,7 @@ function getRiskDetailElements() {
         reportId: document.getElementById("risk-detail-report-id"),
         detectedLabel: document.getElementById("risk-detail-detected-label"),
         confidence: document.getElementById("risk-detail-confidence"),
+        priorityScore: document.getElementById("risk-detail-priority-score"),
         status: document.getElementById("risk-detail-status"),
         reportType: document.getElementById("risk-detail-report-type"),
         createdAt: document.getElementById("risk-detail-created-at"),
@@ -1243,6 +1039,7 @@ function renderRiskDetail(detail) {
     if (els.reportId) els.reportId.textContent = detail.report_id ?? "-";
     if (els.detectedLabel) els.detectedLabel.textContent = detail.detected_label || "-";
     if (els.confidence) els.confidence.textContent = detail.confidence ?? "-";
+    if (els.priorityScore) els.priorityScore.textContent = detail.priority_score ?? "-";
     if (els.status) els.status.textContent = detail.status || "-";
     if (els.reportType) els.reportType.textContent = detail.report_type || "-";
     if (els.createdAt) els.createdAt.textContent = detail.created_at || "-";
@@ -1302,28 +1099,50 @@ function bindRiskDetailModalEvents() {
             closeModal();
         }
     });
+}
 
-    document.querySelectorAll(".risk-list-item[data-report-id]").forEach((item) => {
-        item.addEventListener("click", () => {
-            const reportId = item.dataset.reportId;
-            if (reportId) {
-                openRiskDetailModal(reportId);
-            }
-        });
+function initRealtimeMonitorMap() {
+    const mapElement = document.getElementById("realtime-monitor-map");
+    if (!mapElement) return;
+
+    realtimeMonitorMap = new google.maps.Map(mapElement, {
+        center: { lat: 37.5665, lng: 126.9780 },
+        zoom: 11,
+        mapTypeControl: true,
+        fullscreenControl: true,
+        streetViewControl: false
     });
+
+    realtimeMonitorInfoWindow = new google.maps.InfoWindow();
+
+    initRouteAutocomplete();
+
+    refreshRealtimeMonitorData({
+        preserveView: false,
+        showOverlay: true
+    });
+
+    setInterval(() => {
+        refreshRealtimeMonitorData({
+            preserveView: true,
+            showOverlay: false
+        });
+    }, 30000);
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-    const monitorContainer = document.querySelector(".monitor-container");
-    const configuredDays = Number(monitorContainer?.dataset?.realtimeVisibleDays || 180);
+    const container = document.querySelector(".monitor-container");
+    const configuredDays = Number(container?.dataset?.realtimeVisibleDays || 180);
     CURRENT_VISIBLE_DAYS = Number.isNaN(configuredDays) ? 180 : configuredDays;
 
     bindRiskFilterButtons();
     bindRadiusSelect();
     bindSortSelect();
+    bindTimeFilterSelect();
     bindNearbyButtons();
     bindRouteRiskButtons();
     bindRiskDetailModalEvents();
+    updateFilterStatus();
     hideRouteSummary();
 });
 

@@ -7,6 +7,17 @@
 {% endblock %}
 
 {% block content %}
+  <section class="monitor-hero">
+    <div class="monitor-hero-overlay"></div>
+    <div class="monitor-hero-content">
+      <span class="monitor-badge">실시간 도로 위험 현황</span>
+      <h1>현재 도로 위 위험 상황을<br>한눈에 확인하세요</h1>
+      <p>
+        AI 기반 탐지 데이터를 바탕으로 현재 위험 위치, 긴급도,
+        최근 탐지 현황을 실시간에 가깝게 시각화하여 제공합니다.
+      </p>
+    </div>
+  </section>
 
   <section class="monitor-section">
     <div class="monitor-container" data-realtime-visible-days="{{ default_days or 180 }}">
@@ -44,7 +55,6 @@
           <div class="summary-card-sub">최근 7일 기준 반복 발생 위치</div>
         </div>
       </div>
-
 
       <div class="route-risk-panel">
         <div class="route-risk-header">
@@ -144,7 +154,7 @@
         </div>
       </div>
 
-     <div class="monitor-filter-bar">
+      <div class="monitor-filter-bar">
         <div class="monitor-filter-left">
           <button type="button" class="filter-btn active" data-risk-filter="all">전체</button>
           <button type="button" class="filter-btn" data-risk-filter="긴급">긴급</button>
@@ -170,9 +180,8 @@
         </div>
       </div>
 
-
       <div class="monitor-filter-status" id="monitor-filter-status">
-        전체 지역 기준으로 전체 위험도를 표시하고 있습니다.
+        최근 24시간 기준으로 전체 위험도를 표시하고 있습니다.
       </div>
 
       <div class="monitor-main-grid">
@@ -185,21 +194,21 @@
           <div id="realtime-monitor-map" class="realtime-monitor-map"></div>
 
           <div class="monitor-map-legend">
-                    <span class="legend-item">
-                        <span class="legend-dot emergency"></span> 긴급
-                    </span>
             <span class="legend-item">
-                        <span class="legend-dot danger"></span> 위험
-                    </span>
+              <span class="legend-dot emergency"></span> 긴급
+            </span>
             <span class="legend-item">
-                        <span class="legend-dot warning"></span> 주의
-                    </span>
+              <span class="legend-dot danger"></span> 위험
+            </span>
             <span class="legend-item">
-                        <span class="legend-dot user"></span> 내 위치
-                    </span>
+              <span class="legend-dot warning"></span> 주의
+            </span>
             <span class="legend-item">
-                        <span class="legend-line route"></span> 경로
-                    </span>
+              <span class="legend-dot user"></span> 내 위치
+            </span>
+            <span class="legend-item">
+              <span class="legend-line route"></span> 경로
+            </span>
           </div>
         </div>
 
@@ -211,13 +220,27 @@
                 <p id="risk-list-subtitle">최근 탐지된 위험 이벤트를 빠르게 확인할 수 있습니다.</p>
               </div>
 
-              <div class="risk-list-sort-wrap">
-                <label for="risk-sort-select" class="risk-sort-label">정렬</label>
-                <select id="risk-sort-select" class="risk-sort-select">
-                  <option value="risk_desc">위험도 높은 순</option>
-                  <option value="latest">최신순</option>
-                  <option value="confidence_desc">신뢰도 높은 순</option>
-                </select>
+              <div class="risk-list-toolbar">
+                <div class="risk-list-sort-wrap">
+                  <label for="risk-sort-select" class="risk-sort-label">정렬</label>
+                  <select id="risk-sort-select" class="risk-sort-select">
+                    <option value="priority_desc" selected>우선 처리 순</option>
+                    <option value="risk_desc">위험도 높은 순</option>
+                    <option value="latest">최신순</option>
+                    <option value="confidence_desc">신뢰도 높은 순</option>
+                  </select>
+                </div>
+
+                <div class="risk-list-sort-wrap">
+                  <label for="recent-time-filter" class="risk-sort-label">시간 필터</label>
+                  <select id="recent-time-filter" class="risk-sort-select">
+                    <option value="1h">최근 1시간</option>
+                    <option value="6h">최근 6시간</option>
+                    <option value="24h" selected>최근 24시간</option>
+                    <option value="7d">최근 7일</option>
+                    <option value="all">전체</option>
+                  </select>
+                </div>
               </div>
             </div>
           </div>
@@ -240,6 +263,7 @@
                 <div class="risk-extra">
                   <span>신고ID: {{ item.report_id }}</span>
                   <span>신뢰도: {{ item.confidence }}</span>
+                  <span class="priority-score-badge">우선 {{ item.priority_score }}점</span>
                 </div>
               </div>
             {% endfor %}
@@ -297,6 +321,10 @@
               <span class="value" id="risk-detail-confidence">-</span>
             </div>
             <div class="risk-detail-info-item">
+              <span class="label">우선 점수</span>
+              <span class="value" id="risk-detail-priority-score">-</span>
+            </div>
+            <div class="risk-detail-info-item">
               <span class="label">처리 상태</span>
               <span class="value" id="risk-detail-status">-</span>
             </div>
@@ -342,6 +370,7 @@
 
 {% block extra_js %}
   <script src="{{ url_for('static', filename='js/realtime_monitor.js') }}"></script>
+  <script src="https://unpkg.com/@googlemaps/markerclusterer/dist/index.min.js"></script>
   <script
     src="https://maps.googleapis.com/maps/api/js?key={{ google_maps_api_key }}&libraries=places&callback=initRealtimeMonitorMap"
     async
